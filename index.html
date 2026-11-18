@@ -3,6 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SEA Gas Patrol">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#2b2b2b">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="manifest" href="manifest.json">
 <title>SEA Gas Patrol Run Sheet</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -78,11 +86,28 @@ input:focus,textarea:focus{background:var(--focus)}
 .notes{width:100%;border:1px solid var(--line);min-height:150px;resize:vertical;line-height:1.9;display:block;
   background:repeating-linear-gradient(transparent,transparent calc(1.9em - 1px),#aaa calc(1.9em - 1px),#aaa 1.9em)}
 .km{font-size:12px;color:#555;padding:0 10px 6px}
+.photos-hd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:22px 0 10px;border-top:1px solid var(--line);padding-top:14px}
+.ptitle{font-weight:600;font-size:17px}
+.pcount{font-size:13px;color:#666}
+.photos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media (max-width:560px){.photos{grid-template-columns:1fr}}
+.ph-card{border:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.ph-card img{width:100%;height:200px;object-fit:contain;background:#f4f5f7;display:block}
+.ph-meta{display:flex;flex-direction:column;gap:6px;padding:8px}
+.ph-cap{font-size:13px;font-weight:700}
+.ph-meta textarea{border:1px solid #c4c7cc;resize:none;overflow:hidden;min-height:56px;padding:6px 8px}
+.ph-rm{align-self:flex-start;font:inherit;font-size:13px;font-weight:600;border:0;background:#f3e3e3;color:#7a2a2a;border-radius:6px;padding:8px 10px;min-height:36px;cursor:pointer}
+.ph-rm[data-armed]{background:#7a2a2a;color:#fff}
+.addph{font:inherit;width:100%;display:flex;align-items:center;justify-content:center;margin-top:12px;min-height:56px;border:2px dashed #8a9099;border-radius:8px;background:#fafbfc;font-weight:600;font-size:16px;color:#1f4e79;cursor:pointer}
+.addph:focus-within{outline:3px solid var(--pri);outline-offset:2px}
+.addrow{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
+.addrow .addph{margin-top:0;position:relative;text-align:center;padding:0 8px}
+.addph input[type=file]{display:block;position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none}
 .hint{max-width:820px;margin:14px auto 0;font-size:13px;color:var(--muted);line-height:1.5}
 input[type=file]{display:none}
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 </style>
-<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style>
 </head>
 <body>
 
@@ -124,9 +149,16 @@ input[type=file]{display:none}
     </table>
 
     <textarea class="notes" id="notes" placeholder="Additional notes" aria-label="Additional notes"></textarea>
+
+    <div class="photos-hd"><span class="ptitle">Photos</span><span class="pcount" id="photoCount"></span></div>
+    <div class="photos" id="photos"></div>
+    <div class="addrow">
+      <label class="addph">Take photo<input type="file" id="camInput" accept="image/*" capture="environment"></label>
+      <label class="addph">Choose from library<input type="file" id="photoInput" accept="image/*" multiple></label>
+    </div>
   </section>
 
-  <p class="hint">Tap an empty Time box to record the time now. Tap Now to re-stamp, or tap a filled time to change it. Entries save on this device as you go. Submit makes the PDF and opens the share sheet, so choose Mail to send it. Save JSON keeps a data copy of the run.</p>
+  <p class="hint">Tap an empty Time box to record the time now. Tap Now to re-stamp, or tap a filled time to change it. Entries save on this device as you go. Submit makes the PDF and opens the share sheet, so choose Mail to send it. Save JSON keeps a data copy of the run, photos included. Take photo opens the camera, Choose from library picks existing photos, and photos print at the end of the PDF with their descriptions.</p>
 </div>
 
 <script>
@@ -254,9 +286,82 @@ function show(r){
   route = r; store.set("seagas-route", r);
   sheet = normalise(store.get("seagas-sheet-" + r), r);
   if(!sheet.date) sheet.date = todayISO();
-  hideMsg(); render(); window.scrollTo(0, 0);
+  hideMsg(); render(); loadPhotos(r); window.scrollTo(0, 0);
 }
 document.querySelectorAll(".bar [data-route]").forEach(b => b.addEventListener("click", () => { if(b.dataset.route !== route) show(b.dataset.route); }));
+
+/* ---------- photos (kept in IndexedDB, one list per run sheet) ---------- */
+let photos = [], photoRoute = null, photoLoad = 0, photoTimer = null, pendingPhotoSave = null;
+const idb = (() => { let p; return () => p || (p = new Promise((res, rej) => {
+  try { const r = indexedDB.open("seagas-run-sheet", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("photos");
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  } catch(e){ rej(e); } })); })();
+async function idbGet(k){ try { const db = await idb(); return await new Promise((res, rej) => { const q = db.transaction("photos").objectStore("photos").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); } catch(e){ return null; } }
+async function idbSet(k, v){ try { const db = await idb(); await new Promise((res, rej) => { const t = db.transaction("photos", "readwrite"); t.objectStore("photos").put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); return true; } catch(e){ return false; } }
+function savePhotos(now){
+  const r = photoRoute, list = photos.slice();
+  pendingPhotoSave = async () => { pendingPhotoSave = null; if(!(await idbSet("photos-" + r, list))) msg("Photos couldn't be kept on this device. Submit the PDF before closing the page.", "warn"); };
+  clearTimeout(photoTimer);
+  if(now) pendingPhotoSave(); else photoTimer = setTimeout(() => pendingPhotoSave && pendingPhotoSave(), 400);
+}
+function flushPhotos(){ clearTimeout(photoTimer); if(pendingPhotoSave) pendingPhotoSave(); }
+async function loadPhotos(r){
+  flushPhotos(); photoRoute = r; photos = []; renderPhotos();
+  const tok = ++photoLoad; const got = await idbGet("photos-" + r);
+  if(tok === photoLoad && Array.isArray(got)){ photos = got; renderPhotos(); }
+}
+function readPhoto(file){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * s), h = Math.round(img.naturalHeight * s);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      res({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), data: c.toDataURL("image/jpeg", 0.8), w, h, desc: "", time: nowHM(), addedAt: new Date().toISOString() });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("unreadable")); };
+    img.src = url;
+  });
+}
+function renderPhotos(){
+  const box = $("photos"); box.innerHTML = "";
+  photos.forEach((p, i) => {
+    const card = document.createElement("div"); card.className = "ph-card";
+    const img = document.createElement("img"); img.src = p.data; img.alt = "Photo " + (i + 1);
+    const meta = document.createElement("div"); meta.className = "ph-meta";
+    const cap = document.createElement("div"); cap.className = "ph-cap"; cap.textContent = `Photo ${i + 1}` + (p.time ? ` · added ${p.time}` : "");
+    const ta = document.createElement("textarea"); ta.rows = 2; ta.id = "pd-" + p.id; ta.value = p.desc || "";
+    ta.placeholder = "Description: where it was taken and what it shows"; ta.setAttribute("aria-label", `Photo ${i + 1} description`);
+    ta.addEventListener("input", () => { p.desc = ta.value; grow(ta); savePhotos(); });
+    const rm = document.createElement("button"); rm.type = "button"; rm.className = "ph-rm"; rm.textContent = "Remove";
+    rm.addEventListener("click", () => {
+      if(rm.dataset.armed){ photos = photos.filter(x => x !== p); renderPhotos(); savePhotos(true); return; }
+      rm.dataset.armed = "1"; rm.textContent = "Tap again to remove";
+      setTimeout(() => { if(rm.isConnected){ delete rm.dataset.armed; rm.textContent = "Remove"; } }, 4000);
+    });
+    meta.append(cap, ta, rm); card.append(img, meta); box.append(card);
+    requestAnimationFrame(() => grow(ta));
+  });
+  $("photoCount").textContent = photos.length ? `${photos.length} photo${photos.length > 1 ? "s" : ""} attached` : "No photos yet";
+}
+async function onPhotos(e){
+  const files = [...(e.target.files || [])]; e.target.value = "";
+  if(!files.length) return;
+  const r = photoRoute; let bad = 0, added = 0;
+  $("photoCount").textContent = "Adding photo…";
+  for(const f of files){
+    try { const p = await readPhoto(f); if(photoRoute !== r) break; photos.push(p); added++; } catch(err){ bad++; }
+  }
+  if(photoRoute !== r) return;
+  renderPhotos(); savePhotos(true);
+  if(added){ const ta = document.querySelector("#photos .ph-card:last-child textarea"); if(ta) ta.focus(); }
+  if(bad) msg(`${bad} file${bad > 1 ? "s" : ""} couldn't be read as a photo.`, "warn");
+}
+$("photoInput").addEventListener("change", onPhotos);
+$("camInput").addEventListener("change", onPhotos);
 
 /* ---------- messages ---------- */
 function msg(html, cls){ const m = $("msg"); m.className = "msg " + (cls || ""); m.innerHTML = html; m.hidden = false; window.scrollTo({ top: 0, behavior: "smooth" }); return m; }
@@ -267,7 +372,7 @@ $("clearBtn").addEventListener("click", () => {
   const t = document.createElement("span"); t.textContent = `Clear the ${ROUTES[route].short} sheet? Everything on it will be wiped from this device.`;
   const yes = document.createElement("button"); yes.className = "danger"; yes.textContent = "Clear sheet";
   const no = document.createElement("button"); no.textContent = "Keep it";
-  yes.onclick = () => { store.del("seagas-sheet-" + route); sheet = blank(route); store.set("seagas-sheet-" + route, sheet); render(); msg("Sheet cleared. Today's date is filled in."); };
+  yes.onclick = () => { store.del("seagas-sheet-" + route); sheet = blank(route); store.set("seagas-sheet-" + route, sheet); render(); photos = []; renderPhotos(); savePhotos(true); msg("Sheet cleared. Today's date is filled in."); };
   no.onclick = hideMsg;
   m.append(t, yes, no);
 });
@@ -317,7 +422,7 @@ async function saveStandalone(filename, data, what, after){
 }
 
 $("jsonBtn").addEventListener("click", () => {
-  const out = Object.assign({}, sheet, { day: dayOf(sheet.date), exportedAt: new Date().toISOString() });
+  const out = Object.assign({}, sheet, { day: dayOf(sheet.date), exportedAt: new Date().toISOString(), photos });
   saveFile(baseName() + ".json", JSON.stringify(out, null, 2), "JSON file");
 });
 $("openBtn").addEventListener("click", () => $("openFile").click());
@@ -328,9 +433,12 @@ $("openFile").addEventListener("change", e => {
     try {
       const d = JSON.parse(r.result);
       if(!d || !(d.route in ROUTES) || !Array.isArray(d.checks)) throw 0;
+      flushPhotos();
+      const ph = Array.isArray(d.photos) ? d.photos.filter(p => p && typeof p.data === "string" && p.data.startsWith("data:image/jpeg") && p.w > 0 && p.h > 0) : [];
+      delete d.photos;
       route = d.route; store.set("seagas-route", route);
       sheet = normalise(d, route); store.set("seagas-sheet-" + route, sheet);
-      render(); msg(`Opened <b>${f.name.replace(/[<>&]/g,"")}</b>.`);
+      render(); photoLoad++; photoRoute = route; photos = ph; renderPhotos(); savePhotos(true); msg(`Opened <b>${f.name.replace(/[<>&]/g,"")}</b>.`);
     } catch(err){ msg("That file isn't a SEA Gas run sheet. Pick a .json saved from this page.", "err"); }
     e.target.value = "";
   };
@@ -396,6 +504,34 @@ function buildPDF(){
   doc.rect(M, y, TW, nh);
   doc.setFont("helvetica","normal"); doc.setFontSize(10);
   if(notes.length) doc.text(notes, M+2, y+5.3, { lineHeightFactor: 1.25 });
+
+  if(photos.length){
+    y += nh + 9;
+    const gap = 6, cw = (TW - gap) / 2, maxH = 70;
+    const items = photos.map((p, i) => {
+      const s = Math.min(cw / p.w, maxH / p.h), iw = p.w * s, ih = p.h * s;
+      doc.setFont("helvetica","normal"); doc.setFontSize(9.5);
+      const lines = doc.splitTextToSize(p.desc || "", cw);
+      return { p, i, iw, ih, lines, h: ih + 6.5 + lines.length * 4 + 1 };
+    });
+    const heading = () => { doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(0); doc.text("Photographs:", M, y); y += 4; };
+    if(y + 4 + Math.max(items[0].h, (items[1] || items[0]).h) > 282){ doc.addPage(); y = 15; }
+    heading();
+    for(let k = 0; k < items.length; k += 2){
+      const row = items.slice(k, k + 2), rowH = Math.max(...row.map(o => o.h));
+      if(y + rowH > 282){ doc.addPage(); y = 15; heading(); }
+      row.forEach((o, j) => {
+        const x = M + j * (cw + gap), ix = x + (cw - o.iw) / 2;
+        doc.addImage(o.p.data, "JPEG", ix, y, o.iw, o.ih);
+        doc.setDrawColor(150); doc.setLineWidth(0.2); doc.rect(ix, y, o.iw, o.ih);
+        doc.setFont("helvetica","bold"); doc.setFontSize(9.5); doc.setTextColor(0);
+        doc.text(`Photo ${o.i + 1}` + (o.p.time ? `  (added ${o.p.time})` : ""), x, y + o.ih + 4.5);
+        doc.setFont("helvetica","normal");
+        if(o.lines.length) doc.text(o.lines, x, y + o.ih + 9, { lineHeightFactor: 1.2 });
+      });
+      y += rowH + 6;
+    }
+  }
 
   const pages = doc.getNumberOfPages();
   for(let p = 1; p <= pages; p++){

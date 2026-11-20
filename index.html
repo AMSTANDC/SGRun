@@ -86,6 +86,15 @@ input:focus,textarea:focus{background:var(--focus)}
 .notes{width:100%;border:1px solid var(--line);min-height:150px;resize:vertical;line-height:1.9;display:block;
   background:repeating-linear-gradient(transparent,transparent calc(1.9em - 1px),#aaa calc(1.9em - 1px),#aaa 1.9em)}
 .km{font-size:12px;color:#555;padding:0 10px 6px}
+.picks{display:flex;flex-wrap:wrap;gap:6px;padding:0 8px 8px}
+.picks:empty{display:none}
+.pick{display:inline-flex;align-items:stretch;border:1px solid #b8c4d6;border-radius:999px;background:#eef3fa;overflow:hidden}
+.pick button{font:inherit;font-size:14px;border:0;background:transparent;color:#1f4e79;padding:7px 4px 7px 12px;min-height:36px;cursor:pointer}
+.pick .x{padding:7px 11px 7px 6px;color:#6b7686;font-size:16px}
+.pick .x[data-armed]{background:#7a2a2a;color:#fff;font-size:12px;font-weight:600;padding:7px 10px}
+.pick.on{background:#1f4e79;border-color:#1f4e79}
+.pick.on button{color:#fff}
+.pick button:focus-visible{outline:2px solid var(--pri);outline-offset:-2px}
 .photos-hd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:22px 0 10px;border-top:1px solid var(--line);padding-top:14px}
 .ptitle{font-weight:600;font-size:17px}
 .pcount{font-size:13px;color:#666}
@@ -135,9 +144,9 @@ input[type=file]{display:none}
 
     <table>
       <colgroup><col style="width:25%"><col style="width:25%"><col style="width:25%"><col style="width:25%"></colgroup>
-      <tr><td class="l">Patrol Officer Name:</td><td colspan="3"><input id="officer" autocomplete="off" aria-label="Patrol officer name"></td></tr>
+      <tr><td class="l">Patrol Officer Name:</td><td colspan="3"><input id="officer" autocomplete="off" aria-label="Patrol officer name"><div class="picks" id="officerPicks" aria-label="Saved names"></div></td></tr>
       <tr><td class="l">Day:</td><td><div class="day" id="day"></div></td><td class="l">Date:</td><td><input type="date" id="date" aria-label="Date"></td></tr>
-      <tr><td class="l">Car Registration:</td><td colspan="3"><input id="rego" autocapitalize="characters" autocomplete="off" aria-label="Car registration"></td></tr>
+      <tr><td class="l">Car Registration:</td><td colspan="3"><input id="rego" autocapitalize="characters" autocomplete="off" aria-label="Car registration"><div class="picks" id="regoPicks" aria-label="Saved registrations"></div></td></tr>
       <tr><td class="l">Start Km's:</td><td><input inputmode="decimal" id="startKm" aria-label="Start kilometres"></td><td class="l">Finish Km's:</td><td><input inputmode="decimal" id="finishKm" aria-label="Finish kilometres"><div class="km" id="kmTotal"></div></td></tr>
       <tr><td class="l">Start Time:</td><td id="cell-startTime"></td><td class="l">Finish Time:</td><td id="cell-finishTime"></td></tr>
     </table>
@@ -262,6 +271,7 @@ function render(){
   });
   requestAnimationFrame(() => document.querySelectorAll(".rt textarea").forEach(grow));
   kmTotal(); progress();
+  renderPicks("officer"); renderPicks("rego");
 }
 
 function kmTotal(){
@@ -280,6 +290,37 @@ function progress(){
     if(k === "startKm" || k === "finishKm") kmTotal();
     persist();
   });
+});
+
+/* ---------- remembered names and regos (this device only) ---------- */
+const PICKS = { officer: { key: "seagas-officers" }, rego: { key: "seagas-regos", upper: true } };
+function pickList(f){ const l = store.get(PICKS[f].key); return Array.isArray(l) ? l.filter(x => typeof x === "string" && x) : []; }
+function remember(f){
+  let v = (sheet[f] || "").trim().replace(/\s+/g, " ");
+  if(PICKS[f].upper) v = v.toUpperCase();
+  if(v.length < 2) return;
+  const l = pickList(f).filter(x => x.toLowerCase() !== v.toLowerCase());
+  l.unshift(v); store.set(PICKS[f].key, l.slice(0, 15)); renderPicks(f);
+}
+function renderPicks(f){
+  const box = $(f + "Picks"); if(!box) return; box.innerHTML = "";
+  const cur = (sheet && sheet[f] || "").trim().toLowerCase();
+  pickList(f).forEach(v => {
+    const chip = document.createElement("span"); chip.className = "pick" + (v.toLowerCase() === cur ? " on" : "");
+    const b = document.createElement("button"); b.type = "button"; b.textContent = v; b.setAttribute("aria-label", "Use " + v);
+    b.onclick = () => { sheet[f] = v; $(f).value = v; persist(); renderPicks(f); };
+    const x = document.createElement("button"); x.type = "button"; x.className = "x"; x.textContent = "×"; x.setAttribute("aria-label", "Forget " + v);
+    x.onclick = () => {
+      if(x.dataset.armed){ store.set(PICKS[f].key, pickList(f).filter(y => y !== v)); renderPicks(f); return; }
+      x.dataset.armed = "1"; x.textContent = "Forget?";
+      setTimeout(() => { if(x.isConnected){ delete x.dataset.armed; x.textContent = "×"; } }, 3000);
+    };
+    chip.append(b, x); box.append(chip);
+  });
+}
+["officer", "rego"].forEach(f => {
+  $(f).addEventListener("change", () => remember(f));
+  $(f).addEventListener("input", () => renderPicks(f));
 });
 
 function show(r){
@@ -543,6 +584,7 @@ function buildPDF(){
 }
 
 $("subBtn").addEventListener("click", async () => {
+  remember("officer"); remember("rego");
   if(!window.jspdf){ msg("The PDF tool didn't load. Check the iPad has internet, then reload the page.", "err"); return; }
   const missing = [];
   if(!sheet.officer) missing.push("officer name");
